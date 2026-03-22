@@ -15,7 +15,7 @@ jobs:
   release:
     name: Tag, Release & Publish
     runs-on: ubuntu-latest
-    environment: production  # Reference your environment with protection rules
+    environment: Production  # Reference your environment with protection rules
 
     steps:
       - name: Checkout repository
