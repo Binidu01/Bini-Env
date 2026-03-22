@@ -1,0 +1,74 @@
+{
+  "name": "bini-env",
+  "version": "1.0.6",
+  "description": "Universal environment variable loader and Vite plugin for Bini.js — works in Node.js, Deno, Bun, and Vite edge functions",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "bini",
+    "bini-js",
+    "bini.js",
+    "environment",
+    "env",
+    "dotenv",
+    "deno",
+    "edge-functions",
+    "cross-runtime"
+  ],
+  "author": "Bini.js Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "vite": ">=7.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.3.1"
+  },
+  "tsup": {
+    "entry": [
+      "src/index.ts"
+    ],
+    "format": [
+      "cjs",
+      "esm"
+    ],
+    "dts": true,
+    "clean": true,
+    "splitting": false,
+    "sourcemap": true,
+    "minify": false,
+    "external": [
+      "vite",
+      "fs",
+      "path"
+    ]
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
