@@ -35,6 +35,14 @@
     "edge-functions",
     "cross-runtime"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Binidu01/Bini-Env.git"
+  },
+  "homepage": "https://github.com/Binidu01/Bini-Env#readme",
+  "bugs": {
+    "url": "https://github.com/Binidu01/Bini-Env/issues"
+  },
   "author": "Bini.js Team",
   "license": "MIT",
   "peerDependencies": {
