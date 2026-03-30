@@ -16,6 +16,6 @@ export default defineConfig({
   ],
   esbuildOptions(options) {
     options.platform = "node";
-    options.target = "esnext";
+    options.target = "es2022";
   },
 });

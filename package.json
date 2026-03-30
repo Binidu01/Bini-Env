@@ -1,11 +1,10 @@
 {
   "name": "bini-env",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Universal environment variable loader and Vite plugin for Bini.js — works in Node.js, Deno, Bun, and Vite edge functions",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -15,12 +14,16 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "node --test",
+    "type-check": "tsc --noEmit"
   },
   "keywords": [
     "vite",
@@ -33,11 +36,12 @@
     "dotenv",
     "deno",
     "edge-functions",
-    "cross-runtime"
+    "cross-runtime",
+    "env-loader"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Binidu01/Bini-Env.git"
+    "url": "git+https://github.com/Binidu01/Bini-Env.git"
   },
   "homepage": "https://github.com/Binidu01/Bini-Env#readme",
   "bugs": {
@@ -46,7 +50,12 @@
   "author": "Bini.js Team",
   "license": "MIT",
   "peerDependencies": {
-    "vite": ">=7.0.0"
+    "vite": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": false
+    }
   },
   "dependencies": {
     "dotenv": "^17.3.1"
@@ -55,28 +64,31 @@
     "@types/node": "^22.15.3",
     "tsup": "^8.4.0",
     "typescript": "^5.8.3",
-    "vite": "^7.3.1"
+    "vite": "^8.0.0"
   },
   "tsup": {
-    "entry": [
-      "src/index.ts"
-    ],
-    "format": [
-      "cjs",
-      "esm"
-    ],
+    "entry": ["src/index.ts"],
+    "format": ["cjs", "esm"],
     "dts": true,
     "clean": true,
     "splitting": false,
     "sourcemap": true,
     "minify": false,
+    "treeshake": true,
+    "shims": true,
     "external": [
       "vite",
-      "fs",
-      "path"
-    ]
+      "dotenv"
+    ],
+    "noExternal": [],
+    "platform": "node",
+    "target": "node20"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.19.0 || >=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

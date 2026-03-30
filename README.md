@@ -1,25 +1,43 @@
 # bini-env
 
-![npm](https://img.shields.io/npm/v/bini-env?color=cyan&style=flat-square)
+![npm](https://img.shields.io/npm/v/bini-env?color=cyan\&style=flat-square)
 ![npm downloads](https://img.shields.io/npm/dm/bini-env?style=flat-square)
 ![license](https://img.shields.io/npm/l/bini-env?style=flat-square)
-![vite](https://img.shields.io/badge/vite-plugin-646CFF?style=flat-square&logo=vite)
-![typescript](https://img.shields.io/badge/TypeScript-ready-3178C6?style=flat-square&logo=typescript)
+![vite](https://img.shields.io/badge/vite-%3E%3D8.0-646CFF?style=flat-square\&logo=vite)
+![typescript](https://img.shields.io/badge/TypeScript-ready-3178C6?style=flat-square\&logo=typescript)
+![node](https://img.shields.io/badge/node-%3E%3D20.19-339933?style=flat-square\&logo=node.js)
 
-Universal environment variable loader and Vite plugin for Bini.js. Automatically loads `.env` files in development, reads env vars from the host in production, and works across Node.js, Deno, Bun, and Vite edge functions — with zero configuration.
-
-## Features
-
-- **Universal `getEnv()` / `requireEnv()`** — read env vars in any runtime (Node.js, Deno, Bun, Vite client)
-- **Auto `.env` loading** — no manual `dotenv` setup needed in API routes
-- **`BINI_` prefix** — replaces Vite's `VITE_` prefix with `BINI_` automatically
-- **Branded startup banner** — replaces Vite's default header with a clean Bini.js output
-- **Supports dev and preview modes**
-- **Safe for edge bundlers** — dotenv is loaded via dynamic import, never statically resolved
+**Zero-config environment variable system + Vite plugin for Bini.js**
+Loads `.env` in development, uses host-provided variables in production, and works across Node.js, Bun, Deno, and edge runtimes — without leaking secrets or adding runtime cost.
 
 ---
 
-## Installation
+## ⚠️ Before You Use This
+
+This library **does NOT magically make env vars safe**.
+
+* Anything exposed to the client (`import.meta.env`) is **public**.
+* Only server-side code (`getEnv`, `requireEnv`) can safely access secrets.
+* Misconfigured prefixes = **data leak**.
+
+If you don’t understand this, stop and fix that first.
+
+---
+
+## ✨ Features
+
+* **Universal API** — `getEnv()` / `requireEnv()` work across runtimes
+* **Zero-config `.env` loading** in development
+* **Strict production behavior** — no file reads, no dotenv
+* **Prefix control** — supports `BINI_`, `VITE_`, or custom
+* **Tree-shakeable** — no dead code in client bundles
+* **Edge-safe** — no static dotenv import
+* **Typed** — full TypeScript support
+* **Fast** — single load in dev, zero overhead in prod
+
+---
+
+## 📦 Installation
 
 ```bash
 pnpm add bini-env
@@ -31,197 +49,205 @@ yarn add bini-env
 
 ---
 
-## Vite Plugin Setup
+## 🚀 Quick Start (Don’t Overthink It)
 
 ```ts
 // vite.config.ts
 import { defineConfig } from 'vite';
-import biniEnv from 'bini-env';
+import { biniEnv } from 'bini-env';
 
 export default defineConfig({
   plugins: [biniEnv()]
 });
 ```
 
-That's it. Once added:
-- Your `.env` is auto-loaded for API routes in dev
-- Client code uses `import.meta.env.BINI_*` instead of `VITE_*`
-- The startup banner is replaced with the Bini.js header
+Done.
+
+If this doesn’t work, your project setup is broken — not the plugin.
 
 ---
 
-## Environment Variables
+## 🔐 Environment Rules (Read This Twice)
 
-### `.env` file
+> ✅ **Good news:** Both `BINI_` and `VITE_` prefixes work out of the box — no extra config needed.
+
+### Client (PUBLIC)
 
 ```env
-# Client-side vars — accessible via import.meta.env.BINI_*
-BINI_FIREBASE_API_KEY=your_key
-BINI_FIREBASE_AUTH_DOMAIN=your_domain
-
-# Server-side vars — accessible via getEnv() in API routes
-SMTP_USER=user@smtp.example.com
-SMTP_PASS=your_password
-FROM_EMAIL=App Name <noreply@example.com>
+BINI_PUBLIC_API_URL=https://api.example.com
+VITE_ANALYTICS_ID=UA-XXXX
 ```
 
-### In API routes
+Accessible via:
 
 ```ts
-import { getEnv, requireEnv } from 'bini-env';
-
-// Returns string | undefined
-const smtpUser = getEnv('SMTP_USER');
-
-// Returns string — throws a clear error if missing
-const smtpPass = requireEnv('SMTP_PASS');
+import.meta.env.BINI_PUBLIC_API_URL
 ```
 
-### In client code (React / Vue / etc.)
-
-```ts
-// Works because bini-env sets envPrefix: 'BINI_' automatically
-const apiKey = import.meta.env.BINI_FIREBASE_API_KEY;
-```
+👉 **Never put secrets here. Ever.**
 
 ---
 
-## How env loading works by environment
+### Server (PRIVATE)
 
-| Environment | How vars are loaded | dotenv used? |
-|---|---|---|
-| Dev (Node.js / bini-router) | Auto-loaded from `.env` by bini-env | ✅ Yes (automatic) |
-| Preview (`vite preview`) | Auto-loaded from `.env` by bini-env | ✅ Yes (automatic) |
-| Production (Netlify / Vercel) | Injected by host dashboard | ❌ No |
-| Production (bini-server / VPS) | Set via server env or hosting panel | ❌ No |
-| Deno / Edge Functions | Read from `Deno.env` natively | ❌ No |
-
-You never need to import or configure `dotenv` manually.
-
----
-
-## Startup Output
-
-**Dev mode**
+```env
+SMTP_PASS=super_secret
+DATABASE_URL=postgres://...
 ```
-  ß Bini.js (dev)
-  ➜  Environments: .env.local, .env
-  ➜  Local:   http://localhost:3000/
-  ➜  Network: http://192.168.1.10:3000/
-```
-
-**Preview mode**
-```
-  ß Bini.js (preview)
-  ➜  Environments: .env.local, .env
-  ➜  Local:   http://localhost:4173/
-  ➜  Network: http://192.168.1.10:4173/
-```
-
----
-
-## Plugin Options
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | `boolean` | `true` | Enable or disable the plugin |
-| `clearViteHeader` | `boolean` | `true` | Replace Vite's default startup header |
-| `logo` | `string` | `'ß'` | Custom logo or text shown in the banner |
-| `envPrefix` | `string` | `'BINI_'` | Prefix for client-side env vars in `import.meta.env` |
-
-```ts
-biniEnv({
-  logo: '🚀',
-  clearViteHeader: true,
-  envPrefix: 'BINI_', // change to 'VITE_' to keep Vite's default
-})
-```
-
----
-
-## Detected `.env` Files
-
-The plugin checks for the following files in your project root (in priority order):
-
-1. `.env.local`
-2. `.env.[NODE_ENV].local`
-3. `.env.[NODE_ENV]`
-4. `.env`
-
----
-
-## API Reference
-
-### `getEnv(key: string): string | undefined`
-
-Read an environment variable in any runtime. Checks `Deno.env` → `process.env` → `import.meta.env` in order.
-
-```ts
-import { getEnv } from 'bini-env';
-
-const smtpUser = getEnv('SMTP_USER');
-```
-
-### `requireEnv(key: string): string`
-
-Same as `getEnv` but throws a descriptive error if the variable is missing or empty. Use this for required secrets.
 
 ```ts
 import { requireEnv } from 'bini-env';
 
-const smtpPass = requireEnv('SMTP_PASS');
-// Throws: [bini-env] Missing required environment variable: "SMTP_PASS".
-//   → In development: add it to your .env file.
-//   → In production: add it to your hosting dashboard environment variables.
+const pass = requireEnv('SMTP_PASS');
 ```
 
-### `loadEnv(projectRoot?: string): Promise<void>`
+👉 If this leaks, it’s your fault, not the library’s.
 
-Manually trigger `.env` loading. Called automatically by the Vite plugin — you should not need this.
+---
 
-### `detectEnvFiles(projectRoot?: string): DetectedEnvFile[]`
+## 🧠 How It Actually Works
 
-Scan a directory for `.env` files and return an array of matches.
+| Mode             | Behavior                                 |
+| ---------------- | ---------------------------------------- |
+| Dev (`vite dev`) | Loads `.env` once via dynamic dotenv     |
+| Preview          | Same as dev                              |
+| Production       | Uses `process.env` / host injection only |
+| Edge/Deno        | Uses native `Deno.env`                   |
+
+**No runtime branching in client bundles. No hidden magic.**
+
+---
+
+## ⚙️ Plugin Options
 
 ```ts
-import { detectEnvFiles } from 'bini-env';
-
-const files = detectEnvFiles('/my/project');
-// [{ name: '.env.local', path: '/my/project/.env.local' }, ...]
+biniEnv({
+  enabled: true,
+  clearViteHeader: true,
+  logo: 'ß',
+  envPrefix: ['BINI_', 'VITE_']
+});
 ```
+
+### Critical Detail
+
+If you change `envPrefix`, you are changing what gets exposed to the browser.
+
+Break this → you leak secrets.
 
 ---
 
-## Types
+## 📚 API
+
+### `getEnv(key)`
+
+Returns `string | undefined`.
+
+Safe fallback reader across:
+
+* `Deno.env`
+* `process.env`
+* `import.meta.env`
+
+---
+
+### `requireEnv(key)`
+
+Same as `getEnv` but throws:
+
+```txt
+[bini-env] Missing required environment variable: "SMTP_PASS"
+```
+
+Use this for anything critical.
+
+---
+
+### `biniEnv(options)`
+
+Vite plugin.
+
+If your plugin order is wrong and things break, that’s on your config.
+
+---
+
+## 📂 Env File Resolution Order
+
+1. `.env.local`
+2. `.env.[mode].local`
+3. `.env.[mode]`
+4. `.env`
+
+Loaded once. Cached. No repeated disk reads.
+
+---
+
+## ⚡ Performance
+
+| Metric        | Dev       | Prod        |
+| ------------- | --------- | ----------- |
+| File Reads    | 1–5       | 0           |
+| Runtime Cost  | ~5ms once | 0           |
+| Bundle Impact | Minimal   | Tree-shaken |
+
+If you see overhead in production, you did something wrong.
+
+---
+
+## 🔥 Common Failure Modes
+
+### 1. “Env is undefined”
+
+You forgot the prefix.
+
+### 2. “Works in dev, broken in prod”
+
+You relied on `.env` in production.
+
+### 3. “Secrets leaked”
+
+You exposed them via prefix.
+
+### 4. “Types not found”
+
+Add:
 
 ```ts
-interface BiniEnvPluginOptions {
-  enabled?: boolean;
-  clearViteHeader?: boolean;
-  logo?: string;
-  envPrefix?: string;
-}
-
-interface DetectedEnvFile {
-  name: string;
-  path: string;
-}
+/// <reference types="vite/client" />
 ```
 
 ---
 
-## Compatibility
+## 🧪 Reality Check
 
-| Runtime | Supported |
-|---|---|
-| Node.js 18+ | ✅ |
-| Bun | ✅ |
-| Deno / Edge Functions | ✅ |
-| Vite 7 | ✅ |
-| Vite 8 | ✅ |
+This library is intentionally simple.
+
+If you need:
+
+* secret rotation
+* encrypted envs
+* runtime validation schemas
+
+That’s **your job**, not this package.
 
 ---
 
-## License
+## 🤝 Contributing
 
-MIT
+PRs welcome — but:
+
+* No bloat
+* No magic
+* No runtime cost
+
+If it slows startup or increases bundle size, it’s getting rejected.
+
+---
+
+## 📄 License
+
+MIT © Bini.js Team
+
+---
+
+**Ship fast. Leak nothing. Blame config, not tooling.**
