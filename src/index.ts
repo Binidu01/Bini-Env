@@ -1,7 +1,46 @@
-// src/index.ts
+// bini-env/src/index.ts
 import fs from 'fs';
 import path from 'path';
 import type { Plugin, ResolvedConfig, UserConfig } from 'vite';
+
+/* ==========================================================================
+   Default NODE_ENV — must run before anything else
+   ========================================================================== */
+
+if (typeof process !== 'undefined' && process.env && !process.env.NODE_ENV) {
+  process.env.NODE_ENV = 'production';
+}
+
+/* ==========================================================================
+   IMMEDIATE DOTENV SUPPRESSION - Runs at module load
+   ========================================================================== */
+
+export function suppressDotenvLogsGlobally(): void {
+  if (typeof process !== 'undefined' && process.env) {
+    process.env.DOTENV_QUIET = 'true';
+  }
+
+  const originalLog = console.log;
+  console.log = (...args: any[]) => {
+    const message = args.join(' ');
+    if (message.includes('[dotenv@') && message.includes('injecting env')) {
+      return;
+    }
+    originalLog(...args);
+  };
+
+  const originalError = console.error;
+  console.error = (...args: any[]) => {
+    const message = args.join(' ');
+    if (message.includes('[dotenv@') && message.includes('injecting env')) {
+      return;
+    }
+    originalError(...args);
+  };
+}
+
+// Run suppression immediately when module loads
+suppressDotenvLogsGlobally();
 
 /* ==========================================================================
    Global type declarations for cross-runtime compatibility
@@ -26,6 +65,8 @@ export interface BiniEnvPluginOptions {
   readonly clearViteHeader?: boolean;
   readonly logo?: string;
   readonly envPrefix?: string | string[];
+  readonly loadInPreview?: boolean;
+  readonly suppressDotenvLogs?: boolean;
 }
 
 export interface DetectedEnvFile {
@@ -34,7 +75,7 @@ export interface DetectedEnvFile {
 }
 
 /* ==========================================================================
-   Constants - Optimized with Object.freeze for immutability
+   Constants
    ========================================================================== */
 
 const BINI_LOGO = 'ß';
@@ -45,35 +86,34 @@ const DEFAULT_OPTIONS: Required<BiniEnvPluginOptions> = Object.freeze({
   clearViteHeader: true,
   logo: BINI_LOGO,
   envPrefix: DEFAULT_ENV_PREFIX,
+  loadInPreview: true,
+  suppressDotenvLogs: true,
 });
 
-// ANSI color codes - using const enum for better performance
 const enum COLORS {
-  CYAN = '\x1b[36m',
+  CYAN  = '\x1b[36m',
   RESET = '\x1b[0m',
   GREEN = '\x1b[32m',
 }
 
-// Cache for environment variables to avoid repeated lookups
 const envCache = new Map<string, string | undefined>();
 
+// Store original console functions before any patching
+const originalConsoleLog   = console.log;
+const originalConsoleError = console.error;
+
 /* ==========================================================================
-   Optimized getEnv with caching
+   getEnv
    ========================================================================== */
 
-/**
- * Read an environment variable with caching for performance.
- * Cache is cleared on module reload in development only.
- */
 export function getEnv(key: string): string | undefined {
-  // Check cache first for frequent access patterns
   if (envCache.has(key)) {
     return envCache.get(key);
   }
 
   let value: string | undefined;
 
-  // 1. Deno runtime (edge functions)
+  // 1. Deno runtime
   const deno = (globalThis as unknown as { Deno?: DenoNamespace }).Deno;
   if (deno) {
     try {
@@ -83,11 +123,11 @@ export function getEnv(key: string): string | undefined {
         return value;
       }
     } catch {
-      // Silently fall through
+      // fall through
     }
   }
 
-  // 2. Node.js / Bun runtime
+  // 2. Node.js / Bun
   if (typeof process !== 'undefined' && process.env) {
     value = process.env[key];
     if (value !== undefined) {
@@ -96,24 +136,19 @@ export function getEnv(key: string): string | undefined {
     }
   }
 
-  // 3. Vite client environment (with prefix fallback)
+  // 3. Vite client (import.meta.env)
   try {
     const metaEnv = import.meta.env as Record<string, string | undefined> | undefined;
     if (metaEnv) {
-      // Direct match
       if (metaEnv[key] !== undefined) {
         envCache.set(key, metaEnv[key]);
         return metaEnv[key];
       }
-      
-      // Try BINI_ prefix
       const biniKey = `BINI_${key}`;
       if (metaEnv[biniKey] !== undefined) {
         envCache.set(key, metaEnv[biniKey]);
         return metaEnv[biniKey];
       }
-      
-      // Try VITE_ prefix
       const viteKey = `VITE_${key}`;
       if (metaEnv[viteKey] !== undefined) {
         envCache.set(key, metaEnv[viteKey]);
@@ -124,86 +159,87 @@ export function getEnv(key: string): string | undefined {
     // import.meta.env not available
   }
 
-  // Cache undefined to prevent repeated lookups
   envCache.set(key, undefined);
   return undefined;
 }
 
-/**
- * Optimized requireEnv with cached error messages
- */
+/* ==========================================================================
+   requireEnv
+   ========================================================================== */
+
 export function requireEnv(key: string): string {
   const val = getEnv(key);
   if (!val) {
-    // Create error message once
-    const errorMsg = `[bini-env] Missing required environment variable: "${key}".\n` +
+    throw new Error(
+      `[bini-env] Missing required environment variable: "${key}".\n` +
       `  → In development: add it to your .env file.\n` +
-      `  → In production: add it to your hosting dashboard environment variables.`;
-    throw new Error(errorMsg);
+      `  → In production: add it to your hosting dashboard environment variables.`,
+    );
   }
   return val;
 }
 
 /* ==========================================================================
-   Optimized loadEnv with production checks
+   loadEnv
    ========================================================================== */
 
-let _envLoaded = false;
+let _envLoaded  = false;
 let _loadPromise: Promise<void> | null = null;
 
-/**
- * Load .env file with memoization and race condition prevention
- */
 export async function loadEnv(projectRoot?: string): Promise<void> {
-  // Fast path: already loaded
   if (_envLoaded) return;
-  
-  // Prevent concurrent loads
-  if (_loadPromise) {
-    return _loadPromise;
-  }
+  if (_loadPromise) return _loadPromise;
 
   _loadPromise = (async () => {
     try {
-      // Deno runtime check - fast path
+      // Deno — env is already available via Deno.env
       if ((globalThis as unknown as { Deno?: DenoNamespace }).Deno) {
         _envLoaded = true;
         return;
       }
 
-      // Node.js runtime check
       if (typeof process === 'undefined' || !process.env) {
         _envLoaded = true;
         return;
       }
 
-      // Production optimization - skip file system operations entirely
-      if (process.env.NODE_ENV === 'production') {
-        _envLoaded = true;
-        return;
-      }
-
       const root = projectRoot ?? process.cwd();
-      const envPath = path.join(root, '.env');
 
-      // Check file existence with fs.promises for better performance
-      try {
-        await fs.promises.access(envPath, fs.constants.R_OK);
-      } catch {
-        _envLoaded = true;
-        return;
+      // Load order: lowest → highest priority
+      const envFiles = [
+        '.env',
+        `.env.${process.env.NODE_ENV}`,
+        `.env.${process.env.NODE_ENV}.local`,
+        '.env.local',
+      ];
+
+      suppressDotenvLogsGlobally();
+
+      const dotenv = await import('dotenv');
+
+      for (const envFile of envFiles) {
+        const envPath = path.join(root, envFile);
+        try {
+          await fs.promises.access(envPath, fs.constants.R_OK);
+          dotenv.config({
+            path    : envPath,
+            override: true,
+            quiet   : true,
+          } as Parameters<typeof dotenv.config>[0]);
+        } catch {
+          // file doesn't exist — skip
+        }
       }
 
-      // Dynamic import with caching
-      const dotenv = await import('dotenv');
-      dotenv.config({ path: envPath });
-      
-      // Clear cache after loading new env vars
+      // Clear cache so newly loaded vars are picked up
       envCache.clear();
-    } catch {
-      // Silent fail - requireEnv will handle missing vars
+
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        originalConsoleError('[bini-env] Warning: Failed to load .env file:', error);
+      }
     } finally {
-      _envLoaded = true;
+      _envLoaded   = true;
       _loadPromise = null;
     }
   })();
@@ -212,19 +248,18 @@ export async function loadEnv(projectRoot?: string): Promise<void> {
 }
 
 /* ==========================================================================
-   Optimized detectEnvFiles with caching
+   detectEnvFiles
    ========================================================================== */
 
 let _envFilesCache: DetectedEnvFile[] | null = null;
-let _cachedRoot: string = '';
+let _cachedRoot   = '';
 
 export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnvFile[] {
-  // Cache results for the same root directory
   if (_envFilesCache && _cachedRoot === projectRoot) {
     return _envFilesCache;
   }
 
-  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const nodeEnv = process.env.NODE_ENV ?? 'production';
   const candidates = [
     '.env.local',
     `.env.${nodeEnv}.local`,
@@ -234,7 +269,6 @@ export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnv
 
   const found: DetectedEnvFile[] = [];
 
-  // Use for...of with early break if needed
   for (const file of candidates) {
     const filePath = path.join(projectRoot, file);
     try {
@@ -242,63 +276,59 @@ export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnv
         found.push({ name: file, path: filePath });
       }
     } catch {
-      // Skip files that can't be accessed
+      // skip
     }
   }
 
-  // Cache the result
   _envFilesCache = found;
-  _cachedRoot = projectRoot;
-  
+  _cachedRoot    = projectRoot;
+
   return found;
 }
 
 /* ==========================================================================
-   Optimized Vite plugin with minimal overhead
+   Vite plugin
    ========================================================================== */
 
 function clearLine(): void {
-  // Only write if stdout is a TTY (performance optimization)
   if (process.stdout.isTTY) {
     process.stdout.write('\x1b[2K\r');
   }
 }
 
-function printResolvedUrls(urls: { local: string[]; network: string[] } | null | undefined): void {
+function printResolvedUrls(
+  urls: { local: string[]; network: string[] } | null | undefined,
+): void {
   if (!urls) return;
   if (urls.local.length > 0) {
-    console.log(`  ${COLORS.GREEN}➜${COLORS.RESET}  Local:   ${COLORS.CYAN}${urls.local[0]}${COLORS.RESET}`);
+    originalConsoleLog(
+      `  ${COLORS.GREEN}➜${COLORS.RESET}  Local:   ${COLORS.CYAN}${urls.local[0]}${COLORS.RESET}`,
+    );
   }
   if (urls.network.length > 0) {
-    console.log(`  ${COLORS.GREEN}➜${COLORS.RESET}  Network: ${COLORS.CYAN}${urls.network[0]}${COLORS.RESET}`);
+    originalConsoleLog(
+      `  ${COLORS.GREEN}➜${COLORS.RESET}  Network: ${COLORS.CYAN}${urls.network[0]}${COLORS.RESET}`,
+    );
   }
 }
 
-/**
- * Production-ready Vite plugin with performance optimizations:
- * - Lazy loading
- * - Caching
- * - Minimal bundle impact
- * - No runtime overhead in production
- */
 export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
-  // Fast path: disabled plugin returns no-op
   if (options.enabled === false) {
-    return {
-      name: 'vite-plugin-bini-env',
-      // Minimal plugin that does nothing
-    };
+    return { name: 'vite-plugin-bini-env' };
   }
 
   const resolvedOptions = { ...DEFAULT_OPTIONS, ...options };
-  const { clearViteHeader, logo, envPrefix } = resolvedOptions;
+  const { clearViteHeader, logo, envPrefix, loadInPreview, suppressDotenvLogs } = resolvedOptions;
 
   let resolvedConfig: ResolvedConfig;
 
+  if (suppressDotenvLogs && typeof process !== 'undefined') {
+    suppressDotenvLogsGlobally();
+  }
+
   return {
     name: 'vite-plugin-bini-env',
-    
-    // Optimized config merge
+
     config(): UserConfig {
       return { envPrefix };
     },
@@ -307,9 +337,7 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
       resolvedConfig = cfg;
     },
 
-    // Optimized server configuration with lazy loading
     configureServer(server) {
-      // Defer env loading to avoid blocking server start
       const loadEnvTask = () => {
         void loadEnv(resolvedConfig?.root ?? process.cwd());
       };
@@ -317,29 +345,25 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
       if (server.httpServer) {
         server.httpServer.once('listening', loadEnvTask);
       } else {
-        // Use setImmediate for non-blocking execution
         setImmediate(loadEnvTask);
       }
 
       let serverStarted = false;
       const originalPrintUrls = server.printUrls.bind(server);
 
-      // Only override printUrls if needed
       if (clearViteHeader || logo !== BINI_LOGO) {
         server.printUrls = () => {
           if (serverStarted) return;
           serverStarted = true;
 
           if (clearViteHeader) clearLine();
-          console.log(`\n  ${COLORS.CYAN}${logo} Bini.js${COLORS.RESET} (dev)`);
+          originalConsoleLog(`\n  ${COLORS.CYAN}${logo} Bini.js${COLORS.RESET} (dev)`);
 
-          // Only detect env files in development
-          if (process.env.NODE_ENV !== 'production') {
-            const found = detectEnvFiles(resolvedConfig?.root);
-            if (found.length > 0) {
-              const envString = found.map((f) => f.name).join(', ');
-              console.log(`  ${COLORS.GREEN}➜${COLORS.RESET}  Environments: ${envString}`);
-            }
+          const found = detectEnvFiles(resolvedConfig?.root);
+          if (found.length > 0) {
+            originalConsoleLog(
+              `  ${COLORS.GREEN}➜${COLORS.RESET}  Environments: ${found.map(f => f.name).join(', ')}`,
+            );
           }
 
           if (!clearViteHeader) {
@@ -351,8 +375,19 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
       }
     },
 
-    // Preview server with same optimizations
     configurePreviewServer(server) {
+      if (loadInPreview) {
+        const loadEnvTask = () => {
+          void loadEnv(resolvedConfig?.root ?? process.cwd());
+        };
+
+        if (server.httpServer) {
+          server.httpServer.once('listening', loadEnvTask);
+        } else {
+          setImmediate(loadEnvTask);
+        }
+      }
+
       let previewStarted = false;
       const originalPrintUrls = server.printUrls.bind(server);
 
@@ -362,13 +397,14 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
           previewStarted = true;
 
           if (clearViteHeader) clearLine();
-          console.log(`\n  ${COLORS.CYAN}${logo} Bini.js${COLORS.RESET} (preview)`);
+          originalConsoleLog(`\n  ${COLORS.CYAN}${logo} Bini.js${COLORS.RESET} (preview)`);
 
-          if (process.env.NODE_ENV !== 'production') {
+          if (loadInPreview) {
             const found = detectEnvFiles(resolvedConfig?.root);
             if (found.length > 0) {
-              const envString = found.map((f) => f.name).join(', ');
-              console.log(`  ${COLORS.GREEN}➜${COLORS.RESET}  Environments: ${envString}`);
+              originalConsoleLog(
+                `  ${COLORS.GREEN}➜${COLORS.RESET}  Environments: ${found.map(f => f.name).join(', ')}`,
+              );
             }
           }
 

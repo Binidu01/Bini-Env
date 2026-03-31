@@ -1,6 +1,6 @@
 {
   "name": "bini-env",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Universal environment variable loader and Vite plugin for Bini.js — works in Node.js, Deno, Bun, and Vite edge functions",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
