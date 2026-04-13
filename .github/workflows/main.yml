@@ -15,22 +15,19 @@ jobs:
   release:
     name: Tag, Release & Publish
     runs-on: ubuntu-latest
-    environment: Production  # Reference your environment with protection rules
+    environment: Production
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Ensure full history for tags
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org/
-
-      - name: Ensure latest npm
-        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm install
@@ -48,8 +45,8 @@ jobs:
       - name: Create Git Tag (force if needed)
         run: |
           TAG="v${{ steps.pkg.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config.user.name "github-actions[bot]"
+          git config.user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f "$TAG"
           git push origin "$TAG" --force
           git push origin main --force
@@ -66,5 +63,4 @@ jobs:
       - name: Publish to npm via OIDC
         run: npm publish --access public
         env:
-          # No token needed, uses OIDC
           NPM_CONFIG_PROVENANCE: true

@@ -1,21 +1,15 @@
-import { defineConfig } from "tsup";
+import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ["src/index.ts"],
-  format: ["esm", "cjs"],
-  dts: true,
+  entry    : ['src/index.ts'],
+  format   : ['esm', 'cjs'],
+  platform : 'node',
+  target   : 'node20',
+  dts      : true,
   sourcemap: true,
-  clean: true,
+  clean    : true,
   splitting: false,
   treeshake: true,
-  external: [
-    "vite",
-    "dotenv",
-    "fs",
-    "path",
-  ],
-  esbuildOptions(options) {
-    options.platform = "node";
-    options.target = "es2022";
-  },
+  shims    : true,
+  external : ['vite', 'dotenv', 'fs', 'path'],
 });
