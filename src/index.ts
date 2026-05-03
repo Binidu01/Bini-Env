@@ -1,7 +1,26 @@
 // bini-env/src/index.ts
-import fs from 'fs';
-import path from 'path';
 import type { Plugin, PreviewServer, ResolvedConfig, UserConfig, ViteDevServer } from 'vite';
+
+/* ==========================================================================
+   Runtime detection — must run before anything else
+   ========================================================================== */
+
+function isNodeLike(): boolean {
+  return (
+    typeof process !== 'undefined' &&
+    !!process.env &&
+    typeof process.versions === 'object' &&
+    // Edge runtimes (Vercel, Cloudflare) expose a minimal `process` but not
+    // `process.versions.node`. Checking for it keeps us out of edge bundles.
+    (typeof process.versions.node === 'string' ||
+      // Bun sets process.versions.bun
+      typeof (process.versions as Record<string, unknown>).bun === 'string')
+  );
+}
+
+function isDenoRuntime(): boolean {
+  return typeof (globalThis as unknown as { Deno?: unknown }).Deno !== 'undefined';
+}
 
 /* ==========================================================================
    Capture originals FIRST — before any patching occurs
@@ -14,7 +33,7 @@ const originalConsoleError = console.error.bind(console);
    Default NODE_ENV — must run before anything else
    ========================================================================== */
 
-if (typeof process !== 'undefined' && process.env && !process.env.NODE_ENV) {
+if (isNodeLike() && !process.env.NODE_ENV) {
   process.env.NODE_ENV = 'production';
 }
 
@@ -29,7 +48,7 @@ export function suppressDotenvLogsGlobally(): void {
   if (_suppressionApplied) return;
   _suppressionApplied = true;
 
-  if (typeof process !== 'undefined' && process.env) {
+  if (isNodeLike()) {
     process.env.DOTENV_QUIET = 'true';
   }
 
@@ -91,7 +110,6 @@ export interface DetectedEnvFile {
 const BINI_LOGO          = 'ß';
 const DEFAULT_ENV_PREFIX = ['BINI_', 'VITE_'] as const;
 
-// suppressDotenvLogs intentionally omitted — it is deprecated and ignored
 const DEFAULT_OPTIONS = Object.freeze({
   enabled        : true,
   clearViteHeader: true,
@@ -114,13 +132,6 @@ const envCache = new Map<string, string | undefined>();
 
 /* ==========================================================================
    Standalone logger
-   Used for messages emitted outside plugin context (loadEnv, requireEnv,
-   standalone getEnv calls) where resolvedConfig.logger is not yet available.
-
-   Format mirrors Vite exactly:
-     info  →  12:00:00 [bini-env] …          cyan bold prefix
-     warn  →  12:00:00 (!) [bini-env] …      yellow bold, Vite's (!) convention
-     error →  12:00:00 [bini-env] error …    red bold, optional dim detail line
    ========================================================================== */
 
 function timestamp(): string {
@@ -156,10 +167,6 @@ function getDeno(): DenoNamespace | undefined {
   return (globalThis as unknown as { Deno?: DenoNamespace }).Deno;
 }
 
-function hasProcessEnv(): boolean {
-  return typeof process !== 'undefined' && !!process.env;
-}
-
 /** Schedule a task compatible with Node, Bun, Deno, and edge runtimes. */
 function defer(fn: () => void): void {
   if (typeof setImmediate !== 'undefined') {
@@ -188,8 +195,8 @@ export function getEnv(key: string): string | undefined {
     } catch { /* fall through */ }
   }
 
-  // 2. Node.js / Bun
-  if (hasProcessEnv()) {
+  // 2. Node.js / Bun / Edge (process.env is available on most edge runtimes too)
+  if (typeof process !== 'undefined' && process.env) {
     const value = process.env[key];
     if (value !== undefined) {
       envCache.set(key, value);
@@ -233,9 +240,9 @@ export function requireEnv(key: string): string {
 
 /* ==========================================================================
    loadEnv
-   - Idempotent: repeated awaits are safe; concurrent calls share one promise.
-   - A failed load resets _envLoaded so a retry is possible (e.g. transient
-     file-access race on startup).
+   - Only runs on Node-like runtimes (Node.js, Bun).
+   - Edge runtimes and Deno skip entirely — they get vars from the host.
+   - Idempotent; concurrent calls share one promise.
    ========================================================================== */
 
 let _envLoaded  = false;
@@ -247,8 +254,8 @@ export async function loadEnv(projectRoot?: string): Promise<void> {
 
   _loadPromise = (async () => {
     try {
-      if (getDeno()) return;   // Deno — env already available via Deno.env
-      if (!hasProcessEnv()) return;
+      // Deno and edge runtimes do not use .env files — vars are injected by host
+      if (isDenoRuntime() || !isNodeLike()) return;
 
       const root    = projectRoot ?? process.cwd();
       const nodeEnv = process.env.NODE_ENV ?? 'production';
@@ -261,7 +268,17 @@ export async function loadEnv(projectRoot?: string): Promise<void> {
         '.env.local',
       ];
 
-      const dotenv = await import('dotenv');
+      // Dynamic import keeps `dotenv` and `fs`/`path` out of edge bundles entirely.
+      // Bundlers that trace static imports (esbuild, Rollup) will NOT follow
+      // a runtime-gated dynamic import when tree-shaking is enabled.
+      const [dotenvMod, fsMod, pathMod] = await Promise.all([
+        import('dotenv'),
+        import('node:fs'),
+        import('node:path'),
+      ]);
+      const dotenv = dotenvMod;
+      const fs     = fsMod.default ?? fsMod;
+      const path   = pathMod.default ?? pathMod;
 
       for (const file of envFiles) {
         const filePath = path.join(root, file);
@@ -276,8 +293,6 @@ export async function loadEnv(projectRoot?: string): Promise<void> {
       _envLoaded = true;
 
     } catch (error) {
-      // Surface all load failures — silent swallowing hides misconfigured
-      // deployments that are impossible to debug after the fact.
       biniLogger.error('Failed to load .env file', error);
       // Do NOT set _envLoaded — allow a retry on the next call.
     } finally {
@@ -290,16 +305,34 @@ export async function loadEnv(projectRoot?: string): Promise<void> {
 
 /* ==========================================================================
    detectEnvFiles
-   Cache key includes both root and NODE_ENV so changes in either invalidate.
+   Node-only utility used by the Vite plugin (build-time only, never edge).
    ========================================================================== */
 
 let _envFilesCache: DetectedEnvFile[] | null = null;
 let _cacheKey = '';
 
-export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnvFile[] {
-  const nodeEnv   = process.env.NODE_ENV ?? 'production';
-  const cacheKey  = `${projectRoot}:${nodeEnv}`;
+export function detectEnvFiles(projectRoot?: string): DetectedEnvFile[] {
+  // Guard: this function uses fs synchronously; bail on non-Node runtimes.
+  if (!isNodeLike()) return [];
+
+  const root    = projectRoot ?? process.cwd();
+  const nodeEnv = process.env.NODE_ENV ?? 'production';
+  const cacheKey = `${root}:${nodeEnv}`;
   if (_envFilesCache && _cacheKey === cacheKey) return _envFilesCache;
+
+  // Inline the fs/path usage so no top-level import is needed.
+  // This function is only ever called from the Vite plugin (configureServer /
+  // configurePreviewServer), which runs in Node — never in an edge bundle.
+  let fsSync: typeof import('fs');
+  let pathMod: typeof import('path');
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    fsSync  = require('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    pathMod = require('node:path');
+  } catch {
+    return [];
+  }
 
   const candidates = [
     '.env.local',
@@ -311,8 +344,8 @@ export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnv
   const found: DetectedEnvFile[] = [];
   for (const file of candidates) {
     try {
-      const filePath = path.join(projectRoot, file);
-      if (fs.existsSync(filePath)) found.push({ name: file, path: filePath });
+      const filePath = pathMod.join(root, file);
+      if (fsSync.existsSync(filePath)) found.push({ name: file, path: filePath });
     } catch { /* skip unreadable paths */ }
   }
 
@@ -326,7 +359,9 @@ export function detectEnvFiles(projectRoot: string = process.cwd()): DetectedEnv
    ========================================================================== */
 
 function clearLine(): void {
-  if (process.stdout.isTTY) process.stdout.write('\x1b[2K\r');
+  if (typeof process !== 'undefined' && process.stdout?.isTTY) {
+    process.stdout.write('\x1b[2K\r');
+  }
 }
 
 function printResolvedUrls(
@@ -347,19 +382,13 @@ function printResolvedUrls(
 
 type ServerLike = ViteDevServer | PreviewServer;
 
-/**
- * Patches server.printUrls to emit the Bini.js header and detected env files,
- * then delegates to the original printUrls or our own URL renderer depending
- * on whether clearViteHeader is enabled.
- * Guards against double-invocation with the `started` flag.
- */
 function patchPrintUrls(
-  server      : ServerLike,
-  mode        : 'dev' | 'preview',
-  logo        : string,
+  server         : ServerLike,
+  mode           : 'dev' | 'preview',
+  logo           : string,
   clearViteHeader: boolean,
-  getRoot     : () => string,
-  showEnvFiles: boolean,
+  getRoot        : () => string,
+  showEnvFiles   : boolean,
 ): void {
   let started = false;
   const originalPrintUrls = server.printUrls.bind(server);
@@ -417,7 +446,6 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
     },
 
     configureServer(server) {
-      // Trigger env load once the HTTP server is up, or defer if middleware-only
       const triggerLoad = () => void loadEnv(getRoot());
       if (server.httpServer) {
         server.httpServer.once('listening', triggerLoad);
@@ -425,7 +453,39 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
         defer(triggerLoad);
       }
 
-      // Only patch printUrls when we actually need to change the output
+      // Watch for new or changed .env files and restart the dev server so the
+      // fresh variables are picked up. Chokidar (bundled with Vite) handles the
+      // add/change events; we reset _envLoaded so loadEnv re-reads on restart.
+      const envGlob = `${getRoot()}/.env*`;
+      server.watcher.add(envGlob);
+
+      const onEnvChange = (filePath: string) => {
+        // Ignore editor swap/temp files (.env.swp, .env~, etc.)
+        if (/\.(swp|swo|bak|tmp)$|~$/.test(filePath)) return;
+
+        biniLogger.info(
+          `env file ${filePath.replace(getRoot() + '/', '')} changed — restarting server`,
+        );
+
+        // Reset load state so the restarted server re-reads all .env files
+        _envLoaded  = false;
+        _loadPromise = null;
+        envCache.clear();
+        _envFilesCache = null;
+
+        void server.restart();
+      };
+
+      server.watcher.on('add',    onEnvChange);
+      server.watcher.on('change', onEnvChange);
+
+      // Remove listeners when the server closes so they don't stack across
+      // restarts — Vite calls configureServer again on each restart.
+      server.httpServer?.once('close', () => {
+        server.watcher.off('add',    onEnvChange);
+        server.watcher.off('change', onEnvChange);
+      });
+
       if (clearViteHeader || logo !== BINI_LOGO) {
         patchPrintUrls(server, 'dev', logo, clearViteHeader, getRoot, true);
       }
