@@ -1,8 +1,9 @@
 // bini-env/src/index.ts
+import { env } from 'hono/adapter';
 import type { Plugin, PreviewServer, ResolvedConfig, UserConfig, ViteDevServer } from 'vite';
 
 /* ==========================================================================
-   Runtime detection — must run before anything else
+   Runtime detection — used by Vite plugin hooks only
    ========================================================================== */
 
 function isNodeLike(): boolean {
@@ -10,16 +11,9 @@ function isNodeLike(): boolean {
     typeof process !== 'undefined' &&
     !!process.env &&
     typeof process.versions === 'object' &&
-    // Edge runtimes (Vercel, Cloudflare) expose a minimal `process` but not
-    // `process.versions.node`. Checking for it keeps us out of edge bundles.
     (typeof process.versions.node === 'string' ||
-      // Bun sets process.versions.bun
       typeof (process.versions as Record<string, unknown>).bun === 'string')
   );
-}
-
-function isDenoRuntime(): boolean {
-  return typeof (globalThis as unknown as { Deno?: unknown }).Deno !== 'undefined';
 }
 
 /* ==========================================================================
@@ -30,7 +24,7 @@ const originalConsoleLog   = console.log.bind(console);
 const originalConsoleError = console.error.bind(console);
 
 /* ==========================================================================
-   Default NODE_ENV — must run before anything else
+   Default NODE_ENV
    ========================================================================== */
 
 if (isNodeLike() && !process.env.NODE_ENV) {
@@ -38,64 +32,31 @@ if (isNodeLike() && !process.env.NODE_ENV) {
 }
 
 /* ==========================================================================
-   DOTENV LOG SUPPRESSION
-   Patched once at module load; subsequent calls are no-ops.
+   HonoContext duck type
+
+   We intentionally do NOT import Context<E,P,I> from hono because Hono 4.12
+   added a [GET_MATCH_RESULT] symbol to HonoRequest, making every
+   narrowly-typed Context (e.g. Context<BlankEnv, "/chat", BlankInput>)
+   structurally incompatible with Context<any, any, any>. A minimal duck type
+   that only requires what hono/adapter's env() accesses at runtime sidesteps
+   the symbol variance entirely. Consumers cast with `c as any` once at the
+   call site; the single `env(ctx as any)` below is the only unsafe cast in
+   the entire package.
    ========================================================================== */
 
-let _suppressionApplied = false;
-
-export function suppressDotenvLogsGlobally(): void {
-  if (_suppressionApplied) return;
-  _suppressionApplied = true;
-
-  if (isNodeLike()) {
-    process.env.DOTENV_QUIET = 'true';
-  }
-
-  const isDotenvNoise = (...args: unknown[]): boolean => {
-    const msg = args.join(' ');
-    return (
-      msg.includes('[dotenv@')      ||
-      msg.includes('injected env')  ||
-      msg.includes('injecting env')
-    );
-  };
-
-  console.log = (...args: unknown[]) => {
-    if (!isDotenvNoise(...args)) originalConsoleLog(...args);
-  };
-
-  console.error = (...args: unknown[]) => {
-    if (!isDotenvNoise(...args)) originalConsoleError(...args);
-  };
-}
-
-// Apply once at module load
-suppressDotenvLogsGlobally();
-
-/* ==========================================================================
-   Cross-runtime type declarations
-   ========================================================================== */
-
-interface DenoEnv {
-  get(key: string): string | undefined;
-}
-interface DenoNamespace {
-  env: DenoEnv;
-}
+/** Minimal shape accepted by getEnv / requireEnv. Satisfied by any Hono Context. */
+export type HonoContext = { env: unknown } & Record<string, unknown>;
 
 /* ==========================================================================
    Public types
    ========================================================================== */
 
 export interface BiniEnvPluginOptions {
-  readonly enabled?: boolean;
+  readonly enabled?        : boolean;
   readonly clearViteHeader?: boolean;
-  readonly logo?: string;
-  readonly envPrefix?: string | string[];
-  readonly loadInPreview?: boolean;
-  /** @deprecated Suppression is always applied at module load; this option is ignored. */
-  readonly suppressDotenvLogs?: boolean;
+  readonly logo?           : string;
+  readonly envPrefix?      : string | string[];
+  readonly loadInPreview?  : boolean;
 }
 
 export interface DetectedEnvFile {
@@ -116,7 +77,7 @@ const DEFAULT_OPTIONS = Object.freeze({
   logo           : BINI_LOGO,
   envPrefix      : [...DEFAULT_ENV_PREFIX],
   loadInPreview  : true,
-} satisfies Omit<Required<BiniEnvPluginOptions>, 'suppressDotenvLogs'>);
+} satisfies Required<BiniEnvPluginOptions>);
 
 const enum COLORS {
   CYAN   = '\x1b[36m',
@@ -128,6 +89,7 @@ const enum COLORS {
   DIM    = '\x1b[2m',
 }
 
+// Build-time only cache — never used for request-scoped Hono env() results
 const envCache = new Map<string, string | undefined>();
 
 /* ==========================================================================
@@ -160,14 +122,9 @@ export const biniLogger = {
 } as const;
 
 /* ==========================================================================
-   Runtime helpers
+   Vite plugin helper
    ========================================================================== */
 
-function getDeno(): DenoNamespace | undefined {
-  return (globalThis as unknown as { Deno?: DenoNamespace }).Deno;
-}
-
-/** Schedule a task compatible with Node, Bun, Deno, and edge runtimes. */
 function defer(fn: () => void): void {
   if (typeof setImmediate !== 'undefined') {
     setImmediate(fn);
@@ -177,47 +134,62 @@ function defer(fn: () => void): void {
 }
 
 /* ==========================================================================
-   getEnv
+   Module-level Hono context store
+
+   Lets getEnv / requireEnv work without an explicit `c` argument at every
+   call site. Register once in a global middleware:
+
+     app.use('*', (c, next) => { setContext(c as any); return next(); });
    ========================================================================== */
 
-export function getEnv(key: string): string | undefined {
-  if (envCache.has(key)) return envCache.get(key);
+let _honoContext: HonoContext | null = null;
 
-  // 1. Deno runtime
-  const deno = getDeno();
-  if (deno) {
+export function setContext(c: HonoContext): void {
+  _honoContext = c;
+}
+
+export function clearContext(): void {
+  _honoContext = null;
+}
+
+/* ==========================================================================
+   getEnv
+
+   Resolution order:
+     1. Explicit Hono Context  (c param)   — request-scoped, never cached
+     2. Stored Hono Context    (setContext) — request-scoped, never cached
+     3. process.env            (build-time / Vite plugin hooks — no c available)
+
+   Usage:
+     getEnv(c as any, 'KEY')   — inside a Hono route / middleware
+     getEnv('KEY')             — outside request context (build-time)
+   ========================================================================== */
+
+export function getEnv(c: HonoContext | string, key?: string): string | undefined {
+  const resolvedKey = typeof c === 'string' ? c : key!;
+  const resolvedCtx = typeof c === 'string' ? null : c;
+
+  // 1 & 2. Hono env() — covers all runtimes: CF Workers, Node, Bun, Deno, Edge
+  const ctx = resolvedCtx ?? _honoContext;
+  if (ctx) {
     try {
-      const value = deno.env.get(key);
-      if (value !== undefined) {
-        envCache.set(key, value);
-        return value;
-      }
-    } catch { /* fall through */ }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const honoEnvs = env(ctx as any) as Record<string, string | undefined>;
+      const value    = honoEnvs[resolvedKey];
+      if (value !== undefined) return value; // never cache — request-scoped
+    } catch { /* context binding unavailable — fall through */ }
   }
 
-  // 2. Node.js / Bun / Edge (process.env is available on most edge runtimes too)
+  // 3. process.env — build-time only (Vite plugin hooks run outside any request)
+  if (envCache.has(resolvedKey)) return envCache.get(resolvedKey);
+
   if (typeof process !== 'undefined' && process.env) {
-    const value = process.env[key];
-    if (value !== undefined) {
-      envCache.set(key, value);
-      return value;
-    }
+    const value = process.env[resolvedKey];
+    envCache.set(resolvedKey, value);
+    return value;
   }
 
-  // 3. Vite client (import.meta.env) — also checks BINI_ and VITE_ prefixed variants
-  try {
-    const metaEnv = import.meta.env as Record<string, string | undefined> | undefined;
-    if (metaEnv) {
-      for (const candidate of [key, `BINI_${key}`, `VITE_${key}`]) {
-        if (metaEnv[candidate] !== undefined) {
-          envCache.set(key, metaEnv[candidate]);
-          return metaEnv[candidate];
-        }
-      }
-    }
-  } catch { /* import.meta.env not available in this runtime */ }
-
-  envCache.set(key, undefined);
+  envCache.set(resolvedKey, undefined);
   return undefined;
 }
 
@@ -225,104 +197,36 @@ export function getEnv(key: string): string | undefined {
    requireEnv
    ========================================================================== */
 
-export function requireEnv(key: string): string {
-  const val = getEnv(key);
+export function requireEnv(c: HonoContext | string, key?: string): string {
+  const resolvedKey = typeof c === 'string' ? c : key!;
+  const val = getEnv(c, resolvedKey);
   if (val === undefined) {
     biniLogger.error(
-      `Missing required environment variable: "${key}"\n` +
-      `  ${COLORS.DIM}→ In development: add it to your .env file.${COLORS.RESET}\n` +
+      `Missing required environment variable: "${resolvedKey}"\n` +
+      `  ${COLORS.DIM}→ In development: set it in your platform's env config.${COLORS.RESET}\n` +
       `  ${COLORS.DIM}→ In production: set it in your hosting dashboard.${COLORS.RESET}`,
     );
-    throw new Error(`[bini-env] Missing required environment variable: "${key}"`);
+    throw new Error(`[bini-env] Missing required environment variable: "${resolvedKey}"`);
   }
   return val;
 }
 
 /* ==========================================================================
-   loadEnv
-   - Only runs on Node-like runtimes (Node.js, Bun).
-   - Edge runtimes and Deno skip entirely — they get vars from the host.
-   - Idempotent; concurrent calls share one promise.
-   ========================================================================== */
-
-let _envLoaded  = false;
-let _loadPromise: Promise<void> | null = null;
-
-export async function loadEnv(projectRoot?: string): Promise<void> {
-  if (_envLoaded) return;
-  if (_loadPromise) return _loadPromise;
-
-  _loadPromise = (async () => {
-    try {
-      // Deno and edge runtimes do not use .env files — vars are injected by host
-      if (isDenoRuntime() || !isNodeLike()) return;
-
-      const root    = projectRoot ?? process.cwd();
-      const nodeEnv = process.env.NODE_ENV ?? 'production';
-
-      // Load order: lowest → highest priority (later files override earlier ones)
-      const envFiles = [
-        '.env',
-        `.env.${nodeEnv}`,
-        `.env.${nodeEnv}.local`,
-        '.env.local',
-      ];
-
-      // Dynamic import keeps `dotenv` and `fs`/`path` out of edge bundles entirely.
-      // Bundlers that trace static imports (esbuild, Rollup) will NOT follow
-      // a runtime-gated dynamic import when tree-shaking is enabled.
-      const [dotenvMod, fsMod, pathMod] = await Promise.all([
-        import('dotenv'),
-        import('node:fs'),
-        import('node:path'),
-      ]);
-      const dotenv = dotenvMod;
-      const fs     = fsMod.default ?? fsMod;
-      const path   = pathMod.default ?? pathMod;
-
-      for (const file of envFiles) {
-        const filePath = path.join(root, file);
-        try {
-          await fs.promises.access(filePath, fs.constants.R_OK);
-          dotenv.config({ path: filePath, override: true });
-        } catch { /* file absent — skip */ }
-      }
-
-      // Invalidate cache so newly loaded vars are picked up by getEnv
-      envCache.clear();
-      _envLoaded = true;
-
-    } catch (error) {
-      biniLogger.error('Failed to load .env file', error);
-      // Do NOT set _envLoaded — allow a retry on the next call.
-    } finally {
-      _loadPromise = null;
-    }
-  })();
-
-  return _loadPromise;
-}
-
-/* ==========================================================================
    detectEnvFiles
-   Node-only utility used by the Vite plugin (build-time only, never edge).
+   Node-only — used by the Vite plugin at build/dev time, never on edge.
    ========================================================================== */
 
 let _envFilesCache: DetectedEnvFile[] | null = null;
 let _cacheKey = '';
 
 export function detectEnvFiles(projectRoot?: string): DetectedEnvFile[] {
-  // Guard: this function uses fs synchronously; bail on non-Node runtimes.
   if (!isNodeLike()) return [];
 
-  const root    = projectRoot ?? process.cwd();
-  const nodeEnv = process.env.NODE_ENV ?? 'production';
+  const root     = projectRoot ?? process.cwd();
+  const nodeEnv  = process.env.NODE_ENV ?? 'production';
   const cacheKey = `${root}:${nodeEnv}`;
   if (_envFilesCache && _cacheKey === cacheKey) return _envFilesCache;
 
-  // Inline the fs/path usage so no top-level import is needed.
-  // This function is only ever called from the Vite plugin (configureServer /
-  // configurePreviewServer), which runs in Node — never in an edge bundle.
   let fsSync: typeof import('fs');
   let pathMod: typeof import('path');
   try {
@@ -446,30 +350,18 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
     },
 
     configureServer(server) {
-      const triggerLoad = () => void loadEnv(getRoot());
-      if (server.httpServer) {
-        server.httpServer.once('listening', triggerLoad);
-      } else {
-        defer(triggerLoad);
-      }
+      defer(() => envCache.clear());
 
-      // Watch for new or changed .env files and restart the dev server so the
-      // fresh variables are picked up. Chokidar (bundled with Vite) handles the
-      // add/change events; we reset _envLoaded so loadEnv re-reads on restart.
       const envGlob = `${getRoot()}/.env*`;
       server.watcher.add(envGlob);
 
       const onEnvChange = (filePath: string) => {
-        // Ignore editor swap/temp files (.env.swp, .env~, etc.)
         if (/\.(swp|swo|bak|tmp)$|~$/.test(filePath)) return;
 
         biniLogger.info(
           `env file ${filePath.replace(getRoot() + '/', '')} changed — restarting server`,
         );
 
-        // Reset load state so the restarted server re-reads all .env files
-        _envLoaded  = false;
-        _loadPromise = null;
         envCache.clear();
         _envFilesCache = null;
 
@@ -479,8 +371,6 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
       server.watcher.on('add',    onEnvChange);
       server.watcher.on('change', onEnvChange);
 
-      // Remove listeners when the server closes so they don't stack across
-      // restarts — Vite calls configureServer again on each restart.
       server.httpServer?.once('close', () => {
         server.watcher.off('add',    onEnvChange);
         server.watcher.off('change', onEnvChange);
@@ -493,12 +383,7 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
 
     configurePreviewServer(server) {
       if (loadInPreview) {
-        const triggerLoad = () => void loadEnv(getRoot());
-        if (server.httpServer) {
-          server.httpServer.once('listening', triggerLoad);
-        } else {
-          defer(triggerLoad);
-        }
+        defer(() => envCache.clear());
       }
 
       if (clearViteHeader || logo !== BINI_LOGO) {
@@ -509,3 +394,4 @@ export function biniEnv(options: Readonly<BiniEnvPluginOptions> = {}): Plugin {
 }
 
 export type { Plugin } from 'vite';
+export type { Context } from 'hono';
