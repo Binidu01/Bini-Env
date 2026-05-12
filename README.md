@@ -3,43 +3,31 @@
 ![npm](https://img.shields.io/npm/v/bini-env?color=cyan&style=flat-square)
 ![npm downloads](https://img.shields.io/npm/dm/bini-env?style=flat-square)
 ![license](https://img.shields.io/npm/l/bini-env?style=flat-square)
-![vite](https://img.shields.io/badge/vite-%3E%3D8.0-646CFF?style=flat-square&logo=vite)
-![hono](https://img.shields.io/badge/hono-%3E%3D4.0-E36002?style=flat-square&logo=hono)
+![vite](https://img.shields.io/badge/vite-8.x-646CFF?style=flat-square&logo=vite)
+![hono](https://img.shields.io/badge/hono-4.x-E36002?style=flat-square&logo=hono)
 ![typescript](https://img.shields.io/badge/TypeScript-ready-3178C6?style=flat-square&logo=typescript)
 ![node](https://img.shields.io/badge/node-%3E%3D20.19-339933?style=flat-square&logo=node.js)
 
-**Zero-config environment variable system + Vite plugin for Bini.js**  
-Powered by [Hono](https://hono.dev) — reads env vars from the request context so variables are always resolved from the correct runtime binding, whether you're on Node.js, Bun, Deno, Vercel Edge, Netlify Edge, or Cloudflare Workers.
+**Zero-config environment variable system + Vite plugin for Bini.js**
+
+Powered by [Hono](https://hono.dev) — reads env vars from the Hono request context so variables are always resolved from the correct runtime binding, whether you're on Node.js, Bun, Deno, Vercel Edge, Netlify Edge, or Cloudflare Workers.
 
 ---
 
-## ⚠️ Before You Use This
+## Features
 
-This library **does NOT magically make env vars safe**.
-
-- Anything exposed to the client (`import.meta.env`) is **public**.
-- Only server-side code (`getEnv`, `requireEnv`) can safely access secrets.
-- Misconfigured prefixes = **data leak**.
-
-If you don't understand this, stop and fix that first.
-
----
-
-## ✨ Features
-
-- **Hono-native API** — `getEnv(c, key)` / `requireEnv(c, key)` read from Hono's request context
-- **Universal runtime support** — CF Workers, Node, Bun, Deno, Vercel Edge, Netlify Edge
-- **Zero dotenv** — no `.env` file parsing at runtime; vars come from the host
-- **Build-time `process.env` fallback** — for Vite plugin hooks that run outside a request
-- **Auto server restart** — dev server restarts when `.env` files are created or changed
-- **Prefix control** — supports `BINI_`, `VITE_`, or custom
-- **Tree-shakeable** — no dead code in client bundles
-- **Typed** — full TypeScript support with exported `HonoContext` duck type
-- **Fast** — zero overhead; no file reads in production
+- **Hono-native** — `getEnv(c, key)` / `requireEnv(c, key)` read directly from the Hono request context
+- **Universal runtime** — CF Workers, Node, Bun, Deno, Vercel Edge, Netlify Edge — Hono's adapter handles all of it
+- **Zero dotenv** — no `.env` parsing at runtime; vars come from the host platform
+- **Vite-native dev** — `.env` loading, file watching, and server restarts are handled by Vite itself
+- **Dev banner** — prints `ß Bini.js (dev/preview)` and lists detected `.env` files on server start
+- **Prefix control** — `BINI_` and `VITE_` included out of the box, extend with your own
+- **Tree-shakeable** — nothing lands in the client bundle that shouldn't
+- **Typed** — full TypeScript support with an exported `HonoContext` type
 
 ---
 
-## 📦 Installation
+## Installation
 
 ```bash
 pnpm add bini-env hono
@@ -53,7 +41,9 @@ yarn add bini-env hono
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
+
+**1. Register the Vite plugin**
 
 ```ts
 // vite.config.ts
@@ -65,18 +55,34 @@ export default defineConfig({
 })
 ```
 
+**2. Read env vars in your Hono handlers**
+
 ```ts
-// src/app/api/example.ts
+// src/app/api/hello.ts
 import { Hono } from 'hono'
 import { getEnv, requireEnv } from 'bini-env'
 
 const app = new Hono()
 
-app.get('/hello', (c) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = c as any
-  const name = getEnv(ctx, 'APP_NAME') ?? 'World'
-  return c.json({ message: `Hello, ${name}!` })
+app.post('/hello', async (c) => {
+  try {
+    const ctx = c as any
+
+    // requireEnv throws if the var is missing — fail fast on required config
+    const apiKey  = requireEnv(ctx, 'MY_API_KEY')
+
+    // getEnv returns undefined if missing — use ?? to provide a default
+    const appName = getEnv(ctx, 'APP_NAME')     ?? 'World'
+    const timeout = parseInt(getEnv(ctx, 'TIMEOUT_MS') ?? '5000')
+
+    return c.json({ message: `Hello, ${appName}!` })
+
+  } catch (error: any) {
+    if (error.message?.includes('[bini-env] Missing required')) {
+      return c.json({ error: error.message }, 500)
+    }
+    return c.json({ error: 'Something went wrong.' }, 500)
+  }
 })
 
 export default app
@@ -84,155 +90,213 @@ export default app
 
 ---
 
-## 🔐 Environment Rules (Read This Twice)
+## Usage Pattern
 
-> ✅ Both `BINI_` and `VITE_` prefixes work out of the box — no extra config needed.
-
-### Client (PUBLIC)
-
-```env
-BINI_PUBLIC_API_URL=https://api.example.com
-VITE_ANALYTICS_ID=UA-XXXX
-```
+**Always pass `c` explicitly.** Cast it once at the top of the handler, then use `ctx` throughout.
 
 ```ts
-import.meta.env.BINI_PUBLIC_API_URL
-```
+app.post('/example', async (c) => {
+  try {
+    const ctx = c as any
 
-👉 **Never put secrets here. Ever.**
+    // Required vars — handler throws immediately if missing
+    const dbUrl  = requireEnv(ctx, 'DATABASE_URL')
+    const apiKey = requireEnv(ctx, 'STRIPE_SECRET_KEY')
 
-### Server (PRIVATE)
+    // Optional vars — fall back to sensible defaults
+    const model      = getEnv(ctx, 'AI_MODEL')    ?? 'gpt-4o'
+    const region     = getEnv(ctx, 'AWS_REGION')  ?? 'us-east-1'
+    const maxRetries = parseInt(getEnv(ctx, 'MAX_RETRIES') ?? '3')
+    const debug      = getEnv(ctx, 'DEBUG_MODE')  === 'true'
 
-```env
-SMTP_PASS=super_secret
-DATABASE_URL=postgres://...
-```
+    // ... rest of handler
 
-```ts
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ctx = c as any
-const pass = requireEnv(ctx, 'SMTP_PASS')  // throws if missing
-const db   = getEnv(ctx, 'DATABASE_URL')   // returns undefined if missing
-```
-
-👉 If this leaks, it's your fault, not the library's.
-
----
-
-## 🌍 Platform Support
-
-`getEnv` and `requireEnv` resolve vars from Hono's `env(c)` adapter, which maps to the correct source on every supported platform automatically.
-
-| Platform             | Runtime       | Where vars come from                | How `env(c)` reads them      |
-| -------------------- | ------------- | ----------------------------------- | ---------------------------- |
-| Node.js              | Node          | System env / platform dashboard     | `process.env` ✅              |
-| Bun                  | Bun           | System env / platform dashboard     | `process.env` ✅              |
-| Vercel Edge          | V8 isolate    | Project settings → Environment Vars | `process.env` ✅              |
-| Netlify Edge         | Deno          | Site settings → Environment Vars    | `Deno.env.get()` ✅           |
-| Cloudflare Workers   | V8 isolate    | `wrangler.toml [vars]` / dashboard  | CF bindings via `c.env` ✅    |
-| Deno Deploy          | Deno          | Project settings → Environment Vars | `Deno.env.get()` ✅           |
-
-> **Cloudflare note:** Secrets added via `wrangler secret put` are only available inside the fetch handler via `c.env` — this is a Cloudflare Workers architecture constraint, not a bini-env limitation. `getEnv` reads them correctly when called with `c` inside a route handler.
-
----
-
-## 🧠 How It Actually Works
-
-`getEnv(c, key)` resolves in this order:
-
-1. **`env(c)` from `hono/adapter`** — the Hono request context. This is the primary and correct source on every runtime. Never cached — request-scoped.
-2. **Stored context** — if you called `setContext(c)` in a global middleware, `getEnv('KEY')` (no `c`) uses it.
-3. **`process.env`** — build-time only, for Vite plugin hooks that run outside any request.
-
-`dotenv` is not used anywhere. Variables must be set in your platform's environment config.
-
----
-
-## 🔄 Auto Server Restart
-
-The dev server automatically restarts when any `.env*` file is created or changed in your project root.
-
-```
-12:00:01 [bini-env] .env.local changed — restarting server
-```
-
-Covered events:
-- Creating a new `.env`, `.env.local`, `.env.production`, etc.
-- Editing any existing `.env*` file
-
-Editor swap files (`.env.swp`, `.env~`, `.env.bak`) are ignored.
-
----
-
-## ⚙️ Plugin Options
-
-```ts
-biniEnv({
-  enabled        : true,
-  clearViteHeader: true,
-  logo           : 'ß',
-  envPrefix      : ['BINI_', 'VITE_'],
-  loadInPreview  : true,
+  } catch (error: any) {
+    if (error.message?.includes('[bini-env] Missing required')) {
+      return c.json({ error: error.message }, 500)
+    }
+    return c.json({ error: 'Something went wrong.' }, 500)
+  }
 })
 ```
 
-> **Critical:** If you change `envPrefix`, you are changing what gets exposed to the browser. Break this → you leak secrets.
+**The pattern in three steps:**
+
+1. `const ctx = c as any` — once, at the top of the handler
+2. `requireEnv(ctx, 'KEY')` — for vars the handler cannot run without
+3. `getEnv(ctx, 'KEY') ?? 'default'` — for optional vars with sensible defaults
 
 ---
 
-## 📚 API
+## Environment Prefixes
+
+### `BINI_` — server-side vars
+
+`BINI_` is bini-env's own prefix. Variables are **not** exposed to `import.meta.env` by default, making it the right choice for server-side config and secrets.
+
+To additionally expose a `BINI_` var to the client, add it to `envPrefix` explicitly:
+
+```ts
+biniEnv({ envPrefix: ['BINI_', 'VITE_', 'MY_PUBLIC_'] })
+```
+
+### `VITE_` — public client vars
+
+`VITE_` is Vite's built-in prefix. Any var starting with `VITE_` is bundled into your client-side JavaScript and is publicly visible.
+
+```env
+VITE_ANALYTICS_ID=UA-XXXX             # bundled into client JS — public
+VITE_API_URL=https://api.example.com  # bundled into client JS — public
+```
+
+```ts
+// accessible anywhere, including the browser
+import.meta.env.VITE_ANALYTICS_ID
+```
+
+### Choosing the right prefix
+
+```env
+# ✓ use VITE_ for anything the browser needs
+VITE_API_URL=https://api.example.com
+
+# ✓ use BINI_ for server-side config
+BINI_FEATURE_FLAG=true
+
+# ✓ no prefix for secrets — read via getEnv(ctx, key) only
+DATABASE_URL=postgres://...
+STRIPE_SECRET_KEY=sk_live_...
+```
+
+> Avoid defining the same variable under two different prefixes — your code will silently read whichever one it finds first.
+
+### Prefix summary
+
+| Prefix | Exposed to browser | Use for |
+|--------|--------------------|---------|
+| `BINI_` | No (unless added to `envPrefix`) | Server-side config |
+| `VITE_` | Yes, always | Public client config |
+| No prefix | No | Secrets — server only |
+
+---
+
+## Platform Support
+
+`getEnv` and `requireEnv` delegate to Hono's `env(c)` adapter, which reads from the correct source on every supported platform automatically. Your code never changes regardless of where it deploys.
+
+| Platform | Runtime | Env source | How Hono reads it |
+|----------|---------|------------|-------------------|
+| Node.js | Node | System env / platform dashboard | `process.env` ✅ |
+| Bun | Bun | System env / platform dashboard | `process.env` ✅ |
+| Vercel Edge | V8 isolate | Project settings → Env Vars | `process.env` ✅ |
+| Netlify Edge | Deno | Site settings → Env Vars | `Deno.env.get()` ✅ |
+| Cloudflare Workers | V8 isolate | `wrangler.toml` / dashboard | CF bindings via `c.env` ✅ |
+| Deno Deploy | Deno | Project settings → Env Vars | `Deno.env.get()` ✅ |
+
+> **Cloudflare note:** Secrets set via `wrangler secret put` are only available inside the fetch handler via `c.env` — this is a Workers architecture constraint. `getEnv(ctx, key)` reads them correctly as long as you pass `c`.
+
+---
+
+## How It Works
+
+### The plugin — `biniEnv()`
+
+Does two things: tells Vite which env prefixes to expose to `import.meta.env`, and prints the `ß Bini.js` banner with detected `.env` files when the dev or preview server starts.
+
+```ts
+// what biniEnv() does internally
+config() {
+  return { envPrefix: ['BINI_', 'VITE_', ...yourExtras] }
+}
+```
+
+On server start you will see:
+
+```
+  ß Bini.js (dev)
+  ➜  Environments: .env.local, .env
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: http://192.168.1.7:3000/
+```
+
+Vite handles everything else natively: loading `.env`, `.env.local`, `.env.[mode]` files during dev, watching and restarting on change, injecting prefixed vars into `import.meta.env` at build time, and HMR when env files change. bini-env does not reimplement any of that.
+
+### The env functions — `getEnv` / `requireEnv`
+
+Both functions read exclusively from `env(c)` via `hono/adapter` — the Hono request context. There are no `process.env` fallbacks. Every read is request-scoped and resolved by Hono's adapter for the current platform.
+
+`dotenv` is never used. In production, vars are set in your hosting platform's environment config.
+
+---
+
+## API Reference
 
 ### `getEnv(c, key)`
 
-Returns `string | undefined`. Reads from Hono's request context.
+Returns `string | undefined`. Reads from the Hono request context.
 
 ```ts
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ctx = c as any
-const debug = getEnv(ctx, 'DEBUG_MODE')
-```
+app.get('/config', async (c) => {
+  const ctx = c as any
 
-Also works without `c` outside a request (build-time / Vite hooks):
+  const region   = getEnv(ctx, 'AWS_REGION') ?? 'us-east-1'
+  const logLevel = getEnv(ctx, 'LOG_LEVEL')  ?? 'info'
+  const debug    = getEnv(ctx, 'DEBUG_MODE') === 'true'
 
-```ts
-const debug = getEnv('DEBUG_MODE')
+  return c.json({ region, logLevel, debug })
+})
 ```
 
 ### `requireEnv(c, key)`
 
-Same as `getEnv` but throws if the variable is missing:
-
-```
-[bini-env] Missing required environment variable: "SMTP_PASS"
-  → In development: set it in your platform's env config.
-  → In production: set it in your hosting dashboard.
-```
+Returns `string`. Throws immediately if the variable is missing or empty. Logs a descriptive error to the terminal on failure.
 
 ```ts
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ctx = c as any
-const dbUrl = requireEnv(ctx, 'DATABASE_URL')
-```
+app.post('/send-email', async (c) => {
+  try {
+    const ctx = c as any
 
-### `setContext(c)` / `clearContext()`
+    const smtpHost = requireEnv(ctx, 'SMTP_HOST')
+    const smtpPass = requireEnv(ctx, 'SMTP_PASS')
+    const smtpPort = parseInt(getEnv(ctx, 'SMTP_PORT') ?? '587')
 
-Store a Hono context module-level so `getEnv('KEY')` works without passing `c` at every call site. Register once in a global middleware:
+    // ... send email
 
-```ts
-app.use('*', (c, next) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  setContext(c as any)
-  return next()
+    return c.json({ sent: true })
+
+  } catch (error: any) {
+    if (error.message?.includes('[bini-env] Missing required')) {
+      return c.json({ error: error.message }, 500)
+    }
+    return c.json({ error: 'Failed to send email.' }, 500)
+  }
 })
 ```
 
-### `biniEnv(options)`
+On failure, the terminal will show:
 
-Vite plugin. Handles terminal output and dev server watching.
+```
+[bini-env] error  Missing required environment variable: "SMTP_HOST"
+  -> Set it in your platform's env config or hosting dashboard.
+```
+
+### `biniEnv(options?)`
+
+Vite plugin. Registers `BINI_` and `VITE_` as env prefixes and optionally adds more.
+
+```ts
+biniEnv()
+// or with extra prefixes
+biniEnv({ envPrefix: ['MY_PUBLIC_'] })
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `envPrefix` | `string \| string[]` | `[]` | Extra prefixes to expose to `import.meta.env`, in addition to `BINI_` and `VITE_` |
 
 ### `biniLogger`
 
-Standalone logger that uses Vite-style terminal output. Available for use in your own Bini.js plugins.
+Vite-style terminal logger. Use it in your own Bini.js plugins or server-side code.
 
 ```ts
 import { biniLogger } from 'bini-env'
@@ -244,102 +308,84 @@ biniLogger.error('Something broke', error)
 
 ### `HonoContext`
 
-Exported duck type satisfied by any Hono `Context`. Use it if you need to type a wrapper:
+Exported type (`Context` from Hono). Use it to type helper functions that group env reads, so you only cast `c as any` once per entry point.
 
 ```ts
 import type { HonoContext } from 'bini-env'
 
-function readConfig(c: HonoContext) {
-  return getEnv(c, 'CONFIG_KEY')
+function readDbConfig(c: HonoContext) {
+  const ctx = c as any
+  return {
+    url:      requireEnv(ctx, 'DATABASE_URL'),
+    poolSize: parseInt(getEnv(ctx, 'DB_POOL_SIZE') ?? '10'),
+    ssl:      getEnv(ctx, 'DB_SSL') !== 'false',
+  }
 }
 ```
 
 ---
 
-## 📂 Env File Resolution Order (Dev only)
+## Performance
 
-The Vite plugin watches these files and triggers a server restart on change:
+| Metric | Dev | Prod |
+|--------|-----|------|
+| File reads | 0 | 0 |
+| Runtime cost | ~0ms | 0 |
+| Bundle impact | Minimal | Tree-shaken |
 
-1. `.env.local`
-2. `.env.[mode].local`
-3. `.env.[mode]`
-4. `.env`
-
-In production, none of these are read. Variables must come from your platform.
-
----
-
-## ⚡ Performance
-
-| Metric        | Dev      | Prod        |
-| ------------- | -------- | ----------- |
-| File Reads    | 0        | 0           |
-| Runtime Cost  | ~0ms     | 0           |
-| Bundle Impact | Minimal  | Tree-shaken |
-
-No dotenv. No disk reads. No overhead.
+No dotenv. No disk reads. No caching layer. `getEnv` is a direct call to Hono's adapter on every invocation — request-scoped and correct.
 
 ---
 
-## 🔥 Common Failure Modes
+## Troubleshooting
 
-### "Env is undefined in production"
-You relied on a `.env` file in production. Set vars in your hosting dashboard — bini-env does not read `.env` files at runtime.
+### "Env var is undefined in production"
 
-### "Works in dev, broken in prod"
-Same as above. Production vars come from the host, not from files.
+Vars set in `.env` files are only loaded by Vite during local development. In production, set your variables in your hosting platform's environment dashboard (Vercel, Netlify, Cloudflare, etc.).
 
-### "Secrets leaked"
-You exposed them via `BINI_` or `VITE_` prefix. Those are public. Use unprefixed vars for secrets and only read them server-side via `getEnv(c, key)`.
+### "Works in dev, undefined in prod"
+
+Same as above. Local dev works because Vite loads `.env` files automatically. Production requires platform-level configuration.
 
 ### "Cloudflare secret not found"
-Secrets added via `wrangler secret put` are only available via `c.env` inside your handler — which is exactly where `getEnv(c, key)` reads from. Make sure you're passing `c`.
+
+Secrets set via `wrangler secret put` are only available via `c.env` inside a handler — which is exactly what `getEnv(ctx, key)` reads. Ensure you are passing `c` to the function.
 
 ### "TypeScript error: Context not assignable to HonoContext"
-Hono 4.12 added a `[GET_MATCH_RESULT]` symbol to `HonoRequest` that breaks structural assignability. Cast once per handler:
+
+Hono 4.12+ added a symbol to `HonoRequest` that can break structural assignability in strict TypeScript projects. Cast once per handler:
 
 ```ts
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ctx = c as any
-const key = requireEnv(ctx, 'MY_KEY')
 ```
 
 ### "Types not found"
-Add to your `tsconfig` or entry file:
+
+Add to your `tsconfig.json` or entry file:
+
 ```ts
 /// <reference types="vite/client" />
 ```
 
 ---
 
-## 🧪 Reality Check
+## Compatibility
 
-This library is intentionally simple.
-
-If you need:
-- Secret rotation
-- Encrypted envs
-- Runtime validation schemas
-
-That's **your job**, not this package.
+| Tool | Version | Notes |
+|------|---------|-------|
+| Vite | 8.x | `envPrefix` hook is fully compatible; empty prefix array is never passed |
+| Hono | 4.x | `hono/adapter` `env()` is stable across all 4.x releases |
+| TypeScript | 5.x | Full type support via exported `HonoContext` |
+| Node.js | ≥ 20.19 | Minimum required version |
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-PRs welcome — but:
-- No bloat
-- No magic
-- No runtime cost
-
-If it slows startup or increases bundle size, it's getting rejected.
+PRs are welcome. The goal of this library is to stay minimal and runtime-cost-free. Contributions that add unnecessary complexity, increase bundle size, or introduce startup overhead will not be accepted.
 
 ---
 
-## 📄 License
+## License
 
 MIT © Bini.js Team
-
----
-
-**Ship fast. Leak nothing. Blame config, not tooling.**
