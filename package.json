@@ -72,7 +72,7 @@
     "@types/node": "26.1.2",
     "hono": "^4.8.4",
     "tsup": "^8.5.1",
-    "typescript": "^6.0.0",
+    "typescript": "^5.8.3",
     "vite": "^8.0.8"
   },
   "engines": {
