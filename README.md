@@ -5,7 +5,7 @@
 ![license](https://img.shields.io/npm/l/bini-env?style=flat-square)
 ![vite](https://img.shields.io/badge/vite-8.x-646CFF?style=flat-square&logo=vite)
 ![hono](https://img.shields.io/badge/hono-4.x-E36002?style=flat-square&logo=hono)
-![typescript](https://img.shields.io/badge/TypeScript-6.x-3178C6?style=flat-square&logo=typescript)
+![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript)
 ![node](https://img.shields.io/badge/node-%3E%3D20.19-339933?style=flat-square&logo=node.js)
 
 **Environment variable system + Vite plugin for Bini.js**
@@ -434,7 +434,7 @@ Add to your `tsconfig.json` or entry file:
 |------|---------|-------|
 | Vite | 8.x | `envPrefix` hook is fully compatible; empty prefix array is never passed |
 | Hono | 4.x | `hono/adapter` `env()` is stable across all 4.x releases |
-| TypeScript | 6.x | Full type support via exported `HonoContext` |
+| TypeScript | 5.x | Full type support via exported `HonoContext` |
 | Node.js | ≥ 20.19 | Minimum required version |
 
 ---
